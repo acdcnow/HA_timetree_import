@@ -1,8 +1,14 @@
 """Calendar platform for TimeTree."""
 from datetime import datetime, date
 import logging
+from zoneinfo import ZoneInfo
 
-from homeassistant.components.calendar import CalendarEntity, CalendarEvent
+from homeassistant.components.calendar import (
+    CalendarEntity, 
+    CalendarEvent, 
+    CalendarEntityFeature
+)
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, CONF_CALENDAR_ID, CONF_CALENDAR_NAME
@@ -24,6 +30,9 @@ async def async_setup_entry(hass, entry, async_add_entities):
 class TimeTreeCalendarEntity(CalendarEntity):
     """Representation of a TimeTree Calendar."""
 
+    _attr_has_entity_name = True
+    _attr_supported_features = CalendarEntityFeature.CREATE_EVENT
+
     def __init__(self, coordinator: TimeTreeCoordinator, name: str):
         """Initialize the entity."""
         self.coordinator = coordinator
@@ -38,17 +47,12 @@ class TimeTreeCalendarEntity(CalendarEntity):
         
         future_events = []
         for e in events:
-            # Handle All-Day Events (Compare Date vs Date)
             if e["all_day"]:
                 end_val = e["end"]
-                # Safety check: ensure we have a date object
                 if isinstance(end_val, datetime):
                     end_val = end_val.date()
-                
                 if end_val >= now.date():
                     future_events.append(e)
-            
-            # Handle Regular Events (Compare Datetime vs Datetime)
             else:
                 if e["end"] > now:
                     future_events.append(e)
@@ -56,12 +60,10 @@ class TimeTreeCalendarEntity(CalendarEntity):
         if not future_events:
             return None
             
-        # Helper to safely sort mixed date/datetime objects
         def sort_key(x):
             start = x["start"]
             if isinstance(start, datetime):
                 return start
-            # Convert date to datetime for comparison (assuming start of day local time)
             return dt_util.start_of_local_day(
                 datetime.combine(start, datetime.min.time())
             )
@@ -79,27 +81,58 @@ class TimeTreeCalendarEntity(CalendarEntity):
             ev_start = event_data["start"]
             ev_end = event_data["end"]
             
-            # Normalize to datetime for comparison if necessary, or rely on duck typing 
-            # Note: HA passes start_date/end_date as datetimes.
-            
-            # For strict correctness with all-day events (dates):
             if event_data["all_day"]:
-                # Check if the date range overlaps the datetime range
-                # Convert query range to dates
                 query_start_date = start_date.date()
                 query_end_date = end_date.date()
-                
                 if ev_start < query_end_date and ev_end > query_start_date:
                     events.append(self._build_calendar_event(event_data))
             else:
-                # Standard datetime overlap
                 if ev_start < end_date and ev_end > start_date:
                     events.append(self._build_calendar_event(event_data))
                 
         return events
 
+    async def async_create_event(self, **kwargs):
+        """Add a new event to the calendar."""
+        summary = kwargs.get("summary", "New Event")
+        description = kwargs.get("description", "")
+        location = kwargs.get("location", "")
+        start_dt = kwargs.get("start_date_time")
+        end_dt = kwargs.get("end_date_time")
+        
+        if not start_dt:
+            start_date = kwargs.get("start_date")
+            end_date = kwargs.get("end_date")
+            all_day = True
+            dt_start = datetime.combine(start_date, datetime.min.time()).replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+            dt_end = datetime.combine(end_date, datetime.min.time()).replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+        else:
+            all_day = False
+            dt_start = start_dt
+            dt_end = end_dt
+
+        start_ms = int(dt_start.timestamp() * 1000)
+        end_ms = int(dt_end.timestamp() * 1000)
+        
+        event_payload = {
+            "summary": summary,
+            "description": description,
+            "location": location,
+            "all_day": all_day,
+            "start_at": start_ms,
+            "end_at": end_ms,
+            "timezone": str(dt_util.DEFAULT_TIME_ZONE)
+        }
+
+        try:
+            await self.coordinator.api.async_create_event(self.coordinator.calendar_id, event_payload)
+            await self.coordinator.async_request_refresh()
+        except Exception as err:
+            _LOGGER.error("Error creating event: %s", err)
+            # This raises a visible error in the HA UI
+            raise HomeAssistantError(f"TimeTree API Failed: {err}") from err
+
     def _build_calendar_event(self, event_data):
-        """Convert internal dict to CalendarEvent."""
         return CalendarEvent(
             summary=event_data["summary"],
             start=event_data["start"],

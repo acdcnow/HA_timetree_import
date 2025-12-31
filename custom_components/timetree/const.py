@@ -1,11 +1,12 @@
 """Constants for the TimeTree integration."""
-from datetime import timedelta
 
 DOMAIN = "timetree"
 CONF_CALENDAR_ID = "calendar_id"
 CONF_CALENDAR_NAME = "calendar_name"
+CONF_SCAN_INTERVAL = "scan_interval"
 
-# Update frequency as requested
-UPDATE_INTERVAL = timedelta(minutes=60)
+DEFAULT_SCAN_INTERVAL = 60
+MIN_SCAN_INTERVAL = 5
+MAX_SCAN_INTERVAL = 120
 
 LOGGER_NAME = "custom_components.timetree"
